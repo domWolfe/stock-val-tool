@@ -72,7 +72,7 @@ class StockMetrics:
         NaN — this is correct. rolling() requires a full window before computing.
         
         Parameters:
-        windows (list): List of integers representing the window sizes for moving averages.
+        windows (list): List of integers representing the window sizes for moving averages. Defaults to [20, 50, 200].
         
         Returns:
         pd.DataFrame: DataFrame containing moving averages.

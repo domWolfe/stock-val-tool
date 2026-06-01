@@ -16,3 +16,6 @@ class StockDataFetcher:
 
     def get_cashflow(self):
         return self.stock.cashflow  # cash flow statement
+
+    def get_balance_sheet(self):
+        return self.stock.balance_sheet # balance sheet
