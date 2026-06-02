@@ -39,7 +39,6 @@ MONEY = '#,##0;[Red](#,##0)'
 MONEY2 = '#,##0.00;[Red](#,##0.00)'
 PCT = '0.00%'
 
-
 class ExcelExporter:
     """Render StockMetrics + DCF analysis into a styled Excel workbook."""
 
@@ -140,7 +139,8 @@ class ExcelExporter:
 
         row = 4
         row = self._section(ws, row, "Assumptions", last_col=2 + self.dcf.projection_years)
-        row = self._kv(ws, row, "Base FCF (3yr avg)", self.dcf.base_fcf, MONEY, prefix="$")
+        row = self._kv(ws, row, "Base FCFF (3yr avg)", self.dcf.base_fcf, MONEY, prefix="$")
+        row = self._kv(ws, row, "Tax Rate", self.dcf.tax_rate, PCT)
         row = self._kv(ws, row, "Discount Rate (WACC)", self.dcf.discount_rate, PCT)
         row = self._kv(ws, row, "Growth Rate", self.dcf.growth_rate, PCT)
         row = self._kv(ws, row, "Terminal Growth", self.dcf.terminal_growth_rate, PCT)
@@ -152,8 +152,7 @@ class ExcelExporter:
         self._table_header(ws, row, ["Cash Flow"] + years, start_col=2)
         row += 1
         row = self._table_row(ws, row, "Projected FCF", self.dcf.projected_fcfs, MONEY, stripe=False)
-        row = self._table_row(ws, row, "Present Value of FCF",
-                              self.dcf.pv_fcfs, MONEY, stripe=True)
+        row = self._table_row(ws, row, "Present Value of FCF", self.dcf.pv_fcfs, MONEY, stripe=True)
 
         row += 1
         row = self._section(ws, row, "Terminal & Totals", last_col=2 + self.dcf.projection_years)

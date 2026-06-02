@@ -5,6 +5,18 @@ class DCF:
     _OCF_LABELS: tuple[str, ...] = ('Operating Cash Flow', 'Total Cash From Operating Activities')
     _CAPEX_LABELS: tuple[str, ...] = ('Capital Expenditure', 'Capital Expenditures')
 
+    # Interest add-back: OCF is reported net of interest paid (US GAAP puts interest in the
+    # operating section), so adding back after-tax interest converts OCF-CapEx into an
+    # unlevered (FCFF) figure consistent with a WACC discount and the EV to equity bridge.
+    _INTEREST_CF_LABELS: tuple[str, ...] = ('Interest Paid Supplemental Data', 'Cash Paid For Interest')
+    _INTEREST_IS_LABELS: tuple[str, ...] = ('Interest Expense', 'Interest Expense Non Operating')
+
+    # Effective tax rate sources on the income statement, then a sensible default.
+    _TAX_RATE_LABELS: tuple[str, ...] = ('Tax Rate For Calcs',)
+    _TAX_PROVISION_LABELS: tuple[str, ...] = ('Tax Provision', 'Income Tax Expense')
+    _PRETAX_LABELS: tuple[str, ...] = ('Pretax Income', 'Income Before Tax')
+    _DEFAULT_TAX_RATE: float = 0.21
+
     # Balance-sheet rows for the enterprise-value to equity-value bridge.
     # labels vary by company, so each item is tried in priority order.
     _TOTAL_DEBT_LABELS: tuple[str, ...] = ('Total Debt',)
@@ -15,14 +27,14 @@ class DCF:
     _ST_INV_LABELS: tuple[str, ...] = ('Other Short Term Investments', 'Short Term Investments')
 
     # Non-operating long-term financial assets (excess cash held as securities).
-    _LT_INV_LABELS: tuple[str, ...] = ( 'Available For Sale Securities', 'Investmentin Financial Assets', 
-                                       'Long Term Investments', 'Investments And Advances', 'Other Investments',)
+    _LT_INV_LABELS: tuple[str, ...] = ( 'Available For Sale Securities', 'Investmentin Financial Assets', 'Long Term Investments', 'Investments And Advances', 'Other Investments',)
 
-    def __init__(self, ticker: str, discount_rate: float = 0.1, growth_rate: float = 0.05, terminal_growth_rate: float = 0.02, projection_years: int = 5, include_lt_investments: bool = True) -> None:
+    def __init__(self, ticker: str, discount_rate: float = 0.1, growth_rate: float = 0.05, terminal_growth_rate: float = 0.02, projection_years: int = 5, include_lt_investments: bool = True, tax_rate: float | None = None) -> None:
         """Build a discounted cash flow valuation for a single ticker.
 
-        Fetches company info and the cash flow statement, derives a base free cash flow from the average of the last 
-        3 years of (Operating Cash Flow - Capital Expenditure), then runs the full valuation via calculate().
+        Fetches company info and the cash flow statement, derives a base unlevered free cash flow (FCFF) from the average of the last 3 years of 
+        (Operating Cash Flow - Capital Expenditure + after-tax interest), then runs the full valuation via calculate().  The interest add-back makes 
+        the cash flow pre-financing so it is consistent with discounting at WACC and bridging enterprise value to equity value via net debt.
 
         Parameters:
         ticker (str): Stock ticker symbol to value (e.g. 'AAPL').
@@ -33,6 +45,8 @@ class DCF:
         include_lt_investments (bool): Whether to treat non-operating long-term investments (marketable securities) as excess cash in the equity
             bridge. Appropriate for cash-rich firms holding securities (AAPL, GOOGL); set False for holding companies whose 'investments' are
             operating / equity-method stakes (e.g. KO's bottlers). Defaults to True.
+        tax_rate (float | None): Effective tax rate used to compute the after-tax interest add-back. When None (the default), it is
+            derived from the income statement, falling back to 21% if unavailable.
 
         Raises:
         ValueError: If terminal_growth_rate >= discount_rate, or if shares outstanding cannot be retrieved for the ticker.
@@ -46,12 +60,18 @@ class DCF:
         self.info = self.fetcher.get_info()
         self.cashflow = self.fetcher.get_cashflow()
         self.balance_sheet = self.fetcher.get_balance_sheet()
+        self.financials = self.fetcher.get_financials()
 
         ocf = self._lookup_cashflow(self._OCF_LABELS)
-        capex = self._lookup_cashflow(self._CAPEX_LABELS) #Negative number, so add it to OCF to get FCF
+        capex = self._lookup_cashflow(self._CAPEX_LABELS) # Negative number, so add it to OCF to get FCF.
 
-        years = min(3, len(ocf)) # Average last 3 years instead of just most recent
-        self.base_fcf = float((ocf.iloc[:years] + capex.iloc[:years]).mean())
+        # Convert OCF-CapEx (which is net of interest paid) into an unlevered FCFF by adding back after-tax interest.
+        self.tax_rate = tax_rate if tax_rate is not None else self._effective_tax_rate()
+        interest = self._interest_series().reindex(ocf.index).fillna(0.0)
+        after_tax_interest = interest * (1 - self.tax_rate)
+
+        years = min(3, len(ocf)) # Average last 3 years instead of just most recent.
+        self.base_fcf = float((ocf.iloc[:years] - capex.iloc[:years].abs() + after_tax_interest.iloc[:years]).mean())
 
         self.discount_rate = discount_rate
         self.growth_rate = growth_rate
@@ -136,6 +156,8 @@ class DCF:
     def summary(self) -> dict:
         """Return the full set of valuation results as a dictionary."""
         return {
+            'base_fcf':                self.base_fcf,
+            'tax_rate':                self.tax_rate,
             'projected_fcfs':          self.projected_fcfs,
             'pv_fcfs':                 self.pv_fcfs,
             'terminal_value':          self.terminal_value,
@@ -227,6 +249,56 @@ class DCF:
             if label in self.cashflow.index:
                 return self.cashflow.loc[label]
         raise KeyError(f"None of {labels} found in cash flow statement for '{self.ticker}'. "f"Available rows: {list(self.cashflow.index)}")
+
+    @staticmethod
+    def _first_row(df: pd.DataFrame | None, labels: tuple[str, ...]) -> pd.Series | None:
+        """Return the first matching row of ``df`` (as a Series), or None if absent/empty."""
+        if df is None or df.empty:
+            return None
+        for label in labels:
+            if label in df.index:
+                series = df.loc[label]
+                if series.notna().any():
+                    return series
+        return None
+
+    def _interest_series(self) -> pd.Series:
+        """Return a per-year interest series for the after-tax add-back.
+
+        Prefers actual cash interest paid (matches OCF's cash basis), falls back to income-statement interest expense, and returns 
+        an empty Series when neither is available (no add-back). Values are taken as magnitudes so the add-back is always additive regardless of reported sign.
+        """
+        series = self._first_row(self.cashflow, self._INTEREST_CF_LABELS)
+        if series is None:
+            series = self._first_row(self.financials, self._INTEREST_IS_LABELS)
+        if series is None:
+            return pd.Series(dtype=float)
+        return series.abs()
+
+    def _effective_tax_rate(self) -> float:
+        """Derive the effective tax rate from the income statement, defaulting to 21%.
+
+        Uses yfinance's precomputed 'Tax Rate For Calcs' when present, otherwise Tax Provision / Pretax
+        Income from the most recent year. Falls back to the default when data is missing or implausible
+        (outside [0, 1)), which guards against negative pretax income producing a nonsensical rate.
+        """
+        rate_row = self._first_row(self.financials, self._TAX_RATE_LABELS)
+        if rate_row is not None:
+            rate = float(rate_row.dropna().iloc[0])
+            if 0.0 <= rate < 1.0:
+                return rate
+
+        provision = self._first_row(self.financials, self._TAX_PROVISION_LABELS)
+        pretax = self._first_row(self.financials, self._PRETAX_LABELS)
+        if provision is not None and pretax is not None:
+            prov_val = float(provision.dropna().iloc[0])
+            pretax_val = float(pretax.dropna().iloc[0])
+            if pretax_val > 0:
+                rate = prov_val / pretax_val
+                if 0.0 <= rate < 1.0:
+                    return rate
+
+        return self._DEFAULT_TAX_RATE
 
     def project_cash_flows(self) -> list[float]:
         projected_fcfs: list[float] = []

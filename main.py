@@ -1,12 +1,13 @@
 from src.metrics import StockMetrics
 from src.dcf import DCF
 from src.exporter import ExcelExporter
+from src.csv_exporter import CSVExporter
 
 def main():
     ticker = input("Enter a stock ticker symbol (e.g., AAPL): ").strip()
     discount = float(input("Discount rate / WACC (e.g. 0.10): "))
     growth = float(input("Assumed FCF growth rate (e.g. 0.05): "))
-    include_lt = input("Treat long-term investments as excess cash? " "(Y for cash-rich tech like AAPL, N for holding COs like KO) [Y/n]: ").strip().lower() not in ("n", "no")
+    include_lt = input("Treat long-term investments as excess cash? " "(Y for cash-rich tech like AAPL, N for holding COs like KO) [y/n]: ").strip().lower() not in ("n", "no")
     try:
         metrics = StockMetrics(ticker)
         data = metrics.get_data()
@@ -44,6 +45,11 @@ def main():
 
         path = ExcelExporter(data, dcf).export()
         print(f"\nExcel report saved to: {path.resolve()}")
+
+        csv_paths = CSVExporter(data, dcf).export()
+        print("\nCSV data files saved to:")
+        for p in csv_paths:
+            print(f"  {p.resolve()}")
     except ValueError as e:
         print(e)
 
