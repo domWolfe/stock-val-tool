@@ -2,6 +2,7 @@ from src.metrics import StockMetrics
 from src.dcf import DCF
 from src.exporter import ExcelExporter
 from src.csv_exporter import CSVExporter
+from src.model import begin
 
 def main():
     ticker = input("Enter a stock ticker symbol (e.g., AAPL): ").strip()
@@ -54,4 +55,5 @@ def main():
         print(e)
 
 if __name__ == "__main__":
-    main()
+    #main()
+    begin()
